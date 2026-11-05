@@ -1,6 +1,7 @@
 // Combate. Com dados do jogo (`fight` = loadFightData + `useStyle`), os golpes seguem a máquina de nós original
 // (combos, tempos de golpe/encadeamento, alcance, dano, reações por modificador). Sem dados, usa um combate simples.
 import { MoveRun, isLocomotion, avgRange, reactionPlan } from './fightstyle.js';
+import { resolveValue, resolveNumber, powerForSlot, unlockLevel } from './talents.js';
 const LIGHT = ['attack_light1', 'attack_light2', 'attack_light3'], HEAVY = 'attack_heavy1';
 const REACT = ['pain_high', 'pain_low', 'attack_knockback1', 'attack_knockback2', 'attack_stun1'];
 const ENEMY_ATK = ['attack_light1', 'attack_heavy1', 'attack_light2', 'power_1'];
@@ -19,12 +20,17 @@ export class Combat {
   /** host: WorldHost (para scripts de morte); actors: Actors; ground: Ground; fight: dados de combate (opcional). */
   constructor({ actors, ground, host, fight = null }) {
     this.actors = actors; this.ground = ground; this.host = host; this.fight = fight; this.styles = new Map(); this.fighters = []; this.log = []; this.kills = 0;
-    this.onFx = null; this.onHit = null; this.onKill = null; this.onSwing = null; this.onSound = null; this.onTrail = null;
+    this.onFx = null; this.onHit = null; this.onKill = null; this.onSwing = null; this.onSound = null; this.onTrail = null; this.onEffect = null; this.onProjectile = null;
+    this.projectiles = [];
   }
   add(f) { this.fighters.push(f); return f; }
   /** registra os nós de um estilo de luta (Map) para uso pelos lutadores com aquele `fightstyle` */
   useStyle(name, nodes) { this.styles.set(String(name).toLowerCase(), nodes); }
-  nodesOf(f) { const i = f.inst && f.inst.p && f.inst.p.info; return i && this.styles.get(String(i.fightstyle || 'fightstyle_default').toLowerCase()) || null; }
+  /** nós do lutador: estilo + powerstyle do herói (chave `estilo|powerstyle`), ou só o estilo */
+  nodesOf(f) {
+    const i = f.inst && f.inst.p && f.inst.p.info; if (!i) return null; const fs = String(i.fightstyle || 'fightstyle_default').toLowerCase();
+    return this.styles.get(`${fs}|${String(i.powerstyle || '').toLowerCase()}`) || this.styles.get(fs) || null;
+  }
   has(f, name) { return !!name && f.inst.p.anims.some(a => a.name === name); }
   dur(f, name) { return (f.inst.p.anims.find(a => a.name === name) || {}).dur || 0.6; }
   face(e, dx, dy, k = 1) { const d = wrap(Math.atan2(dy, dx) - e.orient[2]); e.orient[2] += d * k; e._ver++; }
@@ -59,6 +65,9 @@ export class Combat {
     const a = t.attrs, n = t.name, run = f.run;
     if (a.sound && (n === 'sound' || /^whoosh|_sound$/.test(n) || a.type === 'ce_sound')) { if (this.onSound) this.onSound(a.sound, f); return; }
     if (n === 'trail') { if (this.onTrail) this.onTrail(f, a); return; }
+    if (n === 'powerusage') return;                                      // a energia do poder é cobrada ao iniciar
+    if (n === 'effect' || n === 'effect_sound') { if (a.effect && this.onEffect) this.onEffect(a.effect, f, a); if (a.sound && this.onSound) this.onSound(a.sound, f); return; }
+    if (n === 'projectile') { this.spawnProjectile(f, t); return; }
     if (n === 'slide') {                                                // avança até o alvo mais próximo (targetdistance) ou `movement` unidades
       const tg = this.nearest(f, this.foes(f), 240), life = Number(a.life) || 0.15; let go = Number(a.movement) || 0;
       if (tg && a.targetdistance !== undefined) go = Math.max(0, this.dist(f, tg) - Number(a.targetdistance));
@@ -70,7 +79,8 @@ export class Combat {
   }
   strikeTrig(f, t) {
     const a = t.attrs, mods = t.mods, yaw = f.ent.orient[2], arc = (Number(a.arc) || 60) * DEG, reach = (Number(a.maxrange) || 48) + 36;
-    const base = (f.dmg || BASE_DMG) * avgRange(a.damage) / UNIT, knock = a.knockback === undefined ? 40 : Number(a.knockback);
+    const rank = f.level || 1, ref = resolveValue(f.tv, a.damage, rank), raw = ref ? avgRange(ref.value) : 0;
+    const base = a.damagescale === 'none' ? raw : (f.dmg || BASE_DMG) * raw / UNIT, knock = a.knockback === undefined ? 40 : resolveNumber(f.tv, a.knockback, rank, 40);
     const kind = mods.includes('dmgmod_popup') ? 'popup' : mods.includes('dmgmod_trip') ? 'trip' : mods.includes('dmgmod_stun') ? 'stun' : (mods.includes('dmgmod_auto_knockback') || knock >= 120) ? 'knockdown' : 'pain';
     const ground = mods.includes('dmgmod_ground'), radial = arc >= Math.PI * 0.95;
     let hits = 0;
@@ -120,20 +130,59 @@ export class Combat {
     if (has) this.actors.play(f.inst, name, { loop: false });
     return true;
   }
-  /** Poder n (1..): consome 30 de energia, dano em área ao redor, anel visual. */
+  /** Poder do slot n (1..4). Com dados do jogo: nó do powerstyle do herói, nível mínimo e custo de energia do talento. */
   power(f, n) {
-    if (f.state !== 'free' || f.energy < 30) return false;
+    if (f.state !== 'free') return false;
+    const nodes = this.nodesOf(f), tv = f.tv, info = f.inst.p.info;
+    if (nodes && tv && info.talents) {
+      const t = powerForSlot(tv, info.talents, n), lvl = f.level || 1; if (!t) return false;
+      if (lvl < unlockLevel(tv, t)) return false;
+      const node = nodes.get(t.power); if (!node || !this.has(f, node.clip)) return false;
+      const cost = resolveNumber(tv, `%${t.name}_pwr`, lvl, 0); if (f.energy < cost) return false;
+      if (!this.startNode(f, t.power, true)) return false;
+      f.energy -= cost; f.power = n; f.powerTalent = t; return true;
+    }
+    if (f.energy < 30) return false;
     const name = `power_${n}`; if (!this.has(f, name) && !this.has(f, HEAVY)) return false;
     if (!this.attack(f, this.has(f, name) ? name : HEAVY, 46 + n * 6, 0.5)) return false;
     f.energy -= 30; f.area = true; f.power = n; f.dur = Math.min(f.dur, 1.6); f.hitAt = Math.min(f.hitAt, 0.8);
     return true;
+  }
+  /** nível de herói que libera cada slot (1..4); 99 se o herói não tem o poder */
+  powerLevels(f) {
+    const tv = f.tv, info = f.inst.p.info; return [1, 2, 3, 4].map(n => { const t = tv && info.talents ? powerForSlot(tv, info.talents, n) : null; return t ? unlockLevel(tv, t) : 99; });
+  }
+  /** projétil do poder (ex.: escudo do Capitão América): voa até `maxrange`, atravessa se `pierce`, e volta ao dono se o handler for ch_returning_projectile */
+  spawnProjectile(f, t) {
+    const a = t.attrs, rank = f.level || 1, yaw = f.ent.orient[2], ref = resolveValue(f.tv, a.damage, rank);
+    const p = { owner: f, dmg: ref ? avgRange(ref.value) : f.dmg, knock: resolveNumber(f.tv, a.knockback, rank, 120), speed: Number(a.speed) || 450, range: Number(a.maxrange) || 800,
+      pierce: a.pierce === 'true', returning: !!(f.node && /returning_projectile/.test(f.node.handler)), dir: [Math.cos(yaw), Math.sin(yaw)], dist: 0, back: false, hit: new Set(), t: 0,
+      ent: { pos: [f.ent.pos[0] + Math.cos(yaw) * 30, f.ent.pos[1] + Math.sin(yaw) * 30, f.ent.pos[2] + 48], orient: [0, 0, 0], _ver: 0, alive: true, enabled: true, invisible: false, name: 'proj', scale: 1 } };
+    this.projectiles.push(p); if (this.onProjectile) this.onProjectile(p, a); return p;
+  }
+  stepProjectiles(dt) {
+    for (const p of this.projectiles) {
+      p.t += dt; p.ent.orient[2] += dt * 18; const e = p.ent, o = p.owner;
+      if (!p.back) { const k = p.speed * dt; e.pos[0] += p.dir[0] * k; e.pos[1] += p.dir[1] * k; p.dist += k; if (p.dist >= p.range) { if (p.returning) { p.back = true; p.hit.clear(); } else p.dead = true; } }
+      else {
+        const dx = o.ent.pos[0] - e.pos[0], dy = o.ent.pos[1] - e.pos[1], d = Math.hypot(dx, dy), k = Math.min(d, p.speed * 1.2 * dt);
+        if (d < 45 || p.t > 12) p.dead = true; else { e.pos[0] += dx / d * k; e.pos[1] += dy / d * k; }
+      }
+      e._ver++;
+      for (const v of this.foes(o)) {
+        if (p.hit.has(v) || Math.hypot(v.ent.pos[0] - e.pos[0], v.ent.pos[1] - e.pos[1]) > 42 || Math.abs(v.ent.pos[2] + 35 - e.pos[2]) > 90) continue;
+        p.hit.add(v); this.damage(v, o, Math.max(1, Math.round(p.dmg)), p.knock, 'knockdown'); if (!p.pierce) { if (p.returning && !p.back) { p.back = true; p.hit.clear(); } else p.dead = true; break; }
+      }
+      if (p.dead) e.alive = false;
+    }
+    this.projectiles = this.projectiles.filter(p => !p.dead);
   }
   /** entrada do jogador: J = leve (combo), K = pesado */
   input(f, code) {
     if (f.state === 'dead') return;
     const act = ACTION[code];
     if (this.nodesOf(f) && act) {
-      if (f.state === 'free') { if (this.begin(f, act)) return; }
+      if (f.state === 'free') { if (this.begin(f, act)) { if (act === 'smash') { f.holding = true; f.charge = 0; } return; } }
       else if (f.state === 'attack' && f.run) { f.run.press(act); return; }
       else return;
     }
@@ -145,15 +194,32 @@ export class Combat {
     } else if (code === 'KeyK' && f.state === 'free') { f.combo = 0; this.attack(f, HEAVY, 34, 0.5); }
   }
 
+  /** soltar a tecla do golpe pesado: encerra a carga (o nó segue para o golpe) */
+  release(f, code) { if (code === 'KeyK') f.holding = false; }
+  /** bloqueio (segurar): reduz dano vindo da frente e toca pain_blocking; só com o personagem livre */
+  setBlock(f, on) {
+    if (!on) { if (f.blocking) { f.blocking = false; if (f.state === 'free') this.actors.play(f.inst, 'idle'); } return; }
+    if (f.state !== 'free' || !this.has(f, 'blocking')) return;
+    f.blocking = true; this.actors.play(f.inst, 'blocking', { loop: true });
+  }
+
   // ---- dano e reações ----
   /** Aplica dano a `v` vindo de `a`. kind: pain | knockdown | popup | trip | stun */
   damage(v, a, dmg, knock = 60, kind = null) {
     if (!v.alive || (v.ent.invulnerable)) return;
+    if (v.blocking && v.state === 'free') {                                // bloqueio: só vale para golpes vindos da frente
+      const bx = a.ent.pos[0] - v.ent.pos[0], by = a.ent.pos[1] - v.ent.pos[1];
+      if (Math.abs(wrap(Math.atan2(by, bx) - v.ent.orient[2])) < Math.PI * 0.6) {
+        dmg = Math.max(1, Math.round(dmg * 0.2)); knock = Math.min(knock, 25); kind = 'pain';
+        if (this.has(v, 'pain_blocking')) { this.actors.play(v.inst, 'pain_blocking', { loop: false }); v.blockHitT = 0.25; }
+      }
+    }
     v.hp = Math.max(0, v.hp - dmg); this.log.push({ from: a.ent.name, to: v.ent.name, dmg });
     if (this.onHit) this.onHit({ pos: v.ent.pos, dmg, heavy: kind ? kind !== 'pain' : dmg > 25 });
     const dx = v.ent.pos[0] - a.ent.pos[0], dy = v.ent.pos[1] - a.ent.pos[1], l = Math.hypot(dx, dy) || 1;
     const k = kind || (dmg > 25 ? 'knockdown' : 'pain');
     if (v.hp <= 0) { this.ground.move(v.ent, dx / l * knock, dy / l * knock); return this.die(v, a); }
+    if (v.blocking && v.state === 'free' && k === 'pain') { this.ground.move(v.ent, dx / l * knock, dy / l * knock); return; }
     if (v.team === 'hero' && k === 'pain' && dmg < 14) { this.ground.move(v.ent, dx / l * knock * 0.3, dy / l * knock * 0.3); return; }   // heróis aguentam golpes fracos sem cambalear
     if (v.state === 'attack' && k === 'pain' && dmg <= 25) { this.ground.move(v.ent, dx / l * knock * 0.3, dy / l * knock * 0.3); return; }
     this.react(v, a, k, knock, dx / l, dy / l);
@@ -191,7 +257,9 @@ export class Combat {
   }
 
   update(dt) {
+    this.stepProjectiles(dt);
     for (const f of this.fighters) {
+      if (f.blockHitT > 0) { f.blockHitT -= dt; if (f.blockHitT <= 0 && f.blocking && f.state === 'free') this.actors.play(f.inst, 'blocking', { loop: true }); }
       f.cd = Math.max(0, f.cd - dt); f.comboT = Math.max(0, f.comboT - dt); if (f.alive) f.energy = Math.min(100, f.energy + 6 * dt);
       if (f.state === 'dead') {                                              // some depois de 2.5 s (aliados reaparecem)
         f.deadT += dt;
@@ -217,7 +285,11 @@ export class Combat {
     }
   }
   stepRun(f, dt) {
-    const run = f.run; f.t += dt;
+    const run = f.run;
+    if (f.holding && /hold_smash/.test(run.node.handler)) {                                    // segurando K: a carga conta desde o início (charge_time = 1 s) e o clipe espera no fim
+      f.charge = Math.min(1, (f.charge || 0) + dt); if (run.t >= run.dur - 0.05) return;
+    }
+    f.t += dt;
     if (f.slide) {                                                          // deslize do golpe em direção ao alvo
       const k = Math.min(f.slide.left, f.slide.rate * dt); this.ground.move(f.ent, f.slide.dx * k, f.slide.dy * k); f.slide.left -= k; if (f.slide.left <= 0.01) f.slide = null;
     }

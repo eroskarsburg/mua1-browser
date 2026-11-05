@@ -98,3 +98,34 @@ console.log('fightstyle ok');
   assert.equal(c3.dodge(h, null, 'inexistente'), false);
 }
 console.log('dodge ok');
+
+// golpe pesado com carga (ch_hold_smash): segurar K >= 1 s passa o filtro (tag 10, dano "3 4"); tocar usa a tag 11 ("2 3")
+{
+  const an = parseAnimTable(el('A', {}, [el('anims', { ea_idle1: 'idle', ea_attack_heavy1: 'attack_heavy1', ea_attack_knockback2: 'attack_knockback2', ea_blocking: 'blocking' })]));
+  const ev = parseEvents(el('Events', {}, [el('event', { name: 'punch', type: 'ce_atk_punch', damage: '2 3', maxrange: '48', arc: '60', knockback: '40' })]));
+  const ns = parseNodes(el('S', {}, [
+    el('FightMove', { name: 'idle', animenum: 'ea_idle1', noncombat: 'true' }, [el('chain', { action: 'smash', result: 'attackheavy1' })]),
+    el('FightMove', { name: 'attackheavy1', animenum: 'ea_attack_heavy1', handler: 'ch_hold_smash', startchaintime: '1' }, [el('chain', { action: 'idle', result: 'attackknockback2' })]),
+    el('FightMove', { name: 'attackknockback2', animenum: 'ea_attack_knockback2', startchaintime: '0.8' }, [
+      el('trigger', { name: 'filter', time: '0.1', min_charge: '1', passtag: '10', failtag: '11' }),
+      el('trigger', { name: 'punch', time: '-1', tag: '10', damage: '3 4', knockback: '40' }), el('trigger', { name: 'punch', time: '-1', tag: '11', damage: '2 3', knockback: '40' }),
+      el('chain', { action: 'idle', result: 'idle' })]),
+  ]), { anim: an, events: ev });
+  const run = holdSec => {
+    const c4 = new Combat({ actors: { play: () => true }, ground: g, host: {} }); c4.useStyle('fightstyle_default', ns);
+    const mk2 = () => ({ pose: {}, p: { info: { fightstyle: 'fightstyle_default' }, anims: ['idle', 'attack_heavy1', 'attack_knockback2', 'blocking'].map(n => ({ name: n, dur: 0.5 })) } });
+    const h = c4.add(new Fighter(ent('_HERO1_', 0, 0), mk2(), 'hero', { hp: 300, dmg: 16 })); h.controlled = true;
+    const v = c4.add(new Fighter(ent('v', 60, 0), mk2(), 'enemy', { hp: 900 })); v.controlled = true;
+    c4.input(h, 'KeyK'); assert.equal(h.holding, true);
+    for (let t = 0; t < holdSec; t += 0.05) c4.update(0.05); c4.release(h, 'KeyK');
+    for (let i = 0; i < 40; i++) c4.update(0.05); return { dmg: 900 - v.hp, h, c4, v };
+  };
+  const tap = run(0.1), held = run(1.4);
+  assert.ok(held.dmg > tap.dmg, `carregado (${held.dmg}) > toque (${tap.dmg})`); assert.ok(held.dmg >= 19 && held.dmg <= 25 && tap.dmg >= 14 && tap.dmg <= 18);
+  assert.equal(held.h.state, 'free');
+  // bloqueio: dano vindo da frente cai para 20% e a vítima não cambaleia; de costas, não
+  const { c4, h, v } = run(0); v.hp = 900; v.state = 'free'; v.ent.orient[2] = Math.PI; c4.setBlock(v, true); assert.equal(v.blocking, true);
+  c4.damage(v, h, 100, 120, 'knockdown'); assert.equal(900 - v.hp, 20); assert.equal(v.state, 'free');
+  v.ent.orient[2] = 0; v.hp = 900; c4.damage(v, h, 100, 120, 'pain'); assert.equal(900 - v.hp, 100, 'de costas o bloqueio não vale');
+}
+console.log('hold+block ok');

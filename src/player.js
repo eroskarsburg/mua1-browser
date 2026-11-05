@@ -123,6 +123,7 @@ export class Player {
     if (this.air) { this.stepAir(dt, keys, camYaw); return; }
     if (this.landT > 0) { this.landT -= dt; if (this.landT > 0) return; this.state = 'idle'; this.actors.play(this.inst, 'idle'); }
     if (this.fighter && this.fighter.state !== 'free') return;      // preso em ataque/reação/morte
+    if (this.fighter && this.fighter.blocking) return;              // bloqueando: parado
     let f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
     let r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
     if (!this.grounded) {                                           // primeiro pouso: procura chão perto do ponto de início

@@ -61,7 +61,7 @@ export class TeamHud {
       m.style.borderColor = f.hp / f.maxhp > 0.5 ? '#cfe4ff' : f.hp / f.maxhp > 0.25 ? '#ffd24a' : '#ff5a4a'; m.onclick = () => this.onPick && this.onPick(f);
     });
     this.slots.querySelectorAll('.sl').forEach(sl => {
-      const n = +sl.dataset.n, ok = (act.level || 1) >= POWER_UNLOCK[n - 1], img = sl.querySelector('img'), em = sl.querySelector('em');
+      const n = +sl.dataset.n, ok = (act.level || 1) >= ((act.powerReq || POWER_UNLOCK)[n - 1] ?? 99), img = sl.querySelector('img'), em = sl.querySelector('em');
       sl.classList.toggle('lock', !ok); sl.classList.toggle('ready', ok && act.energy >= 30); sl.classList.toggle('low', ok && act.energy < 30);
       img.style.display = ok ? '' : 'none'; em.style.display = ok ? 'none' : ''; if (ok) this.pic(img, act);
     });

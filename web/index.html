@@ -56,6 +56,7 @@ import { Actors, loadCharacterDB } from '../src/actors.js';
 import { Ground, Player, cameraDistance } from '../src/player.js';
 import { Combat, Fighter } from '../src/combat.js';
 import { loadFightData } from '../src/fightstyle.js';
+import { loadTalents } from '../src/talents.js';
 import { Effects } from '../src/effects.js';
 import { Portraits, TeamHud } from '../src/hud.js';
 import { Director } from '../src/director.js';
@@ -151,8 +152,9 @@ async function loadEntities(e, my) {
     const add = (ch, ent) => actors.spawn(ch, ent).then(async items => {
       if (tok !== simTok || !items.length) return; renderer.addItems(items);
       const inst = actors.list.find(a => a.ent === ent), hero = /^_HERO\d_$/.test(ent.name);
-      if (inst && fight && combat) { const st = inst.p.info.fightstyle; if (!combat.styles.has(st.toLowerCase())) combat.useStyle(st, await fight.style(st)); }
-      if (inst && combat) { const nf = combat.add(new Fighter(ent, inst, hero ? 'hero' : 'enemy', hero ? { hp: 240, speed: 260, dmg: 16 } : { hp: Number(ent.def.health) || 100, speed: 190, dmg: 9 })); if (hero) Save.applyHero(GAME.save, nf); }
+      if (inst && fight && combat) { const i = inst.p.info, key = `${i.fightstyle}|${i.powerstyle}`.toLowerCase(); if (!combat.styles.has(key)) combat.useStyle(key, await fight.style(i.fightstyle, i.powerstyle)); }
+      const tv = hero && inst && data ? await loadTalents(data, parseXmlb, inst.p.info.name).catch(() => null) : null;
+      if (inst && combat) { const nf = combat.add(new Fighter(ent, inst, hero ? 'hero' : 'enemy', hero ? { hp: 240, speed: 260, dmg: 16 } : { hp: Number(ent.def.health) || 100, speed: 190, dmg: 9 })); if (hero) { Save.applyHero(GAME.save, nf); nf.tv = tv; nf.powerReq = combat.powerLevels(nf); } }
     }).catch(err => console.warn('ator', ch, err.message));
     combat = new Combat({ actors, ground, host: sim.host });
     const effAr = archives.get('effects'), texAr = archives.get('textures');
@@ -165,6 +167,14 @@ async function loadEntities(e, my) {
         fxs.spawn(n, [pos[0], pos[1], pos[2] + 40]);
       };
     }
+    if (renderer.particles) {                                // efeitos reais dos poderes (char/<herói>/pN_power) e projétil (escudo)
+      const fxs = renderer.particles;
+      combat.onEffect = (name, f) => { if (fxs.has(name)) fxs.spawn(name, [f.ent.pos[0], f.ent.pos[1], f.ent.pos[2] + 45]); };
+    }
+    combat.onProjectile = p => {
+      const k = 16, b = new Float32Array([k, 0, 0, 0, 0, k, 0, 0, 0, 0, 3, 0, 0, 0, 0, 1]);        // disco achatado girando
+      renderer.addItems([{ geo: CUBE, base: b, m: mul(entMatrix(p.ent), b), st: { tex: null, diffuse: [.85, .9, 1, .95], blend: true, atest: false }, ent: p.ent, ver: -1 }]);
+    };
     combat.onFx = ({ pos, r, power, name }) => {
       if (combat.onPower) combat.onPower({ pos, power, name });                         // anel de poder: disco que expande e some
       const ent = { pos: [pos[0], pos[1], pos[2] + 10], orient: [0, 0, 0], _ver: 0, alive: true, enabled: true, invisible: false, fxT: 0, fxR: r };
@@ -272,6 +282,7 @@ async function loadEntities(e, my) {
       return;
     }
     if (director.locked && /^(KeyJ|KeyK|Digit\d)$/.test(ev.code)) return;
+    if (ev.code === 'KeyQ' && !ev.repeat && player && player.fighter && !player.air && !director.locked) { combat.setBlock(player.fighter, true); ev.preventDefault(); return; }
     if (ev.code === 'KeyL' && !ev.repeat && player && player.fighter && !player.air && !director.locked) { combat.dodge(player.fighter, player.heading(keys, renderer.cam.yaw)); ev.preventDefault(); return; }
     if (ev.code === 'Space' && !ev.repeat && player && !director.locked) { if (player.jump()) ev.preventDefault(); return; }
     if ((ev.code === 'KeyJ' || ev.code === 'KeyK') && !ev.repeat && player && player.fighter && !player.air) { combat.input(player.fighter, ev.code); ev.preventDefault(); return; }
@@ -283,9 +294,9 @@ async function loadEntities(e, my) {
     }
     if (!CTRL.has(ev.code)) return; keys.add(ev.code); ev.preventDefault();
   };
-  const ku = ev => keys.delete(ev.code);
+  const ku = ev => { keys.delete(ev.code); if (player && player.fighter) { if (ev.code === 'KeyK') combat.release(player.fighter, 'KeyK'); if (ev.code === 'KeyQ') combat.setBlock(player.fighter, false); } };
   window.addEventListener('keydown', kd); window.addEventListener('keyup', ku);
-  $('#ctl').insertAdjacentHTML('beforeend', ' <small>WASD move · Shift anda · J ataque (combo) · K pesado · 1-4 poderes · Tab/F1-F4/clique troca herói · arrastar = câmera</small>');
+  $('#ctl').insertAdjacentHTML('beforeend', ' <small>WASD move · Shift anda · J ataque (combo) · K pesado (segure p/ carregar) · Q bloqueia · L esquiva · Espaço pula · 1-4 poderes · Tab/F1-F4/clique troca herói · arrastar = câmera</small>');
   $('#run').onclick = async () => { n = await sim.run(); running = true; };
   const bars = $('#bars'), bd = [];
   const updateBars = c => {

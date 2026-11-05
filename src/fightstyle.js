@@ -75,10 +75,12 @@ export async function loadFightData(data, parse) {
   const styles = new Map();
   return {
     anim, events, shared, styles,
-    async style(name) {                                                    // nós do estilo + compartilhados (o estilo vence)
-      const k = lc(name); if (!styles.has(k)) {
-        const r = await rd(`fightstyles/${k}.xmlb`), own = r ? parseNodes(r, { anim, events }) : new Map();
-        styles.set(k, new Map([...shared, ...own]));
+    /** nós compartilhados < estilo de luta < powerstyle do herói (ataques próprios e poderes); o último vence */
+    async style(name, powerstyle = '') {
+      const k = lc(name) + '|' + lc(powerstyle); if (!styles.has(k)) {
+        const r = await rd(`fightstyles/${lc(name)}.xmlb`), own = r ? parseNodes(r, { anim, events }) : new Map();
+        const p = powerstyle ? await rd(`powerstyles/${lc(powerstyle)}.xmlb`) : null, ps = p ? parseNodes(p, { anim, events }) : new Map();
+        styles.set(k, new Map([...shared, ...own, ...ps]));
       }
       return styles.get(k);
     },

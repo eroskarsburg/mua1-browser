@@ -12,7 +12,8 @@ export async function loadCharacterDB(data) {
     for (const c of parseXmlb(await data.read(f + '.xmlb')).children) {
       const a = c.attrs; if (!a.name || !a.skin) continue;
       const fs = (c.children || []).find(t => t.tag === 'talent' && /^fightstyle_/.test(t.attrs.name || ''));
-      db.set(a.name.toLowerCase(), { name: a.name, skin: a.skin, anims: a.characteranims || '', playable: a.playable === 'true', fightstyle: fs ? fs.attrs.name : 'fightstyle_default' });
+      const talents = (c.children || []).filter(t => t.tag === 'talent' && t.attrs.name).map(t => t.attrs.name);
+      db.set(a.name.toLowerCase(), { name: a.name, skin: a.skin, anims: a.characteranims || '', playable: a.playable === 'true', fightstyle: fs ? fs.attrs.name : 'fightstyle_default', powerstyle: a.powerstyle || '', talents });
     }
   }
   return db;
