@@ -1,0 +1,11 @@
+# dados extraídos do jogo (propriedade da Activision/Marvel): nunca versionar
+out/
+*.bin
+*.igb
+*.fsb
+*.bk2
+node_modules/
+.playwright-mcp/
+*.log
+__pycache__/
+*.pyc

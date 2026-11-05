@@ -1,0 +1,9 @@
+{
+  "name": "mua-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/run.mjs",
+    "serve": "npx http-server -p 8765 ."
+  }
+}
