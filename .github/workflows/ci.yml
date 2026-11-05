@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+      # Não há dependências npm nem etapa de build (JS de navegador em módulos ES).
+      - name: Checagem de sintaxe
+        run: for f in src/*.js; do node --check "$f"; done
+      # Suítes de integração dependem dos arquivos do jogo (não distribuídos) e são puladas aqui, de forma explícita.
+      - run: npm test

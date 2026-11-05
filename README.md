@@ -1,5 +1,7 @@
 # MUA Web
 
+![CI](https://github.com/eroskarsburg/mua1-browser/actions/workflows/ci.yml/badge.svg) ![License](https://img.shields.io/badge/license-MIT-blue)
+
 Visualizador/porte em andamento de **Marvel Ultimate Alliance (PC)** para o navegador, por engenharia reversa dos formatos.
 Modelo "traga seus arquivos": você aponta a pasta do jogo que já possui; os `.bin` são lidos localmente com `File.slice()`
 (ou HTTP Range), decifrados e descomprimidos **só nos trechos necessários**. Nenhum asset do jogo é distribuído.
@@ -65,3 +67,9 @@ Combate e animação (engenharia reversa dos dados do jogo, `src/fightstyle.js`)
 - `Marvel.exe` decompilado com Ghidra 12.2 (JDK 25) em `C:\Users\Eros\tools\re` (scripts Java em `scripts/`: DumpStrings, Decompile, DecompVtable, Xrefs). Achados: handlers `ch_*` registrados em `FUN_14057dc30` (cada um com vtable); `ch_move` ajusta a taxa da animação = velocidade×input ÷ velocidade de referência; as velocidades walk/run/sprint (enum `ea_*` 7/8/9) e advance/retreat/strafe (23–26) vêm de uma tabela por conjunto de animação preenchida em `FUN_140376ee0`; pulo (`ch_move_jump`, `FUN_140558100`): velocidade vertical 450 u/s, horizontal ×1.4. A gravidade do pulo não foi localizada (ajustada à duração do clipe).
 - **Canal "Motion"** (descoberto via `FUN_14062fcf0`, que compara nomes de osso com "bip01"/"motion"): cada clipe tem um osso `Motion` com o deslocamento de raiz acumulado (x = frente, y = esquerda). Ele dá as velocidades reais: walk 40, run 160, sprint 245,6 u/s, e a distância das esquivas (rolamento frontal 172 u, laterais ~118 u). `Pose.motionAt/motionSpeed` o leem; `Actors.groundSpeed` usa a velocidade dele; a esquiva (tecla L) aplica o movimento de raiz com invulnerabilidade até `startchaintime` (0,6 s).
 Pendente: bloqueio/agarrar (nós existem nos dados), carga do golpe pesado (segurar K), encontros scriptados da fase, popups do Fury com voz.
+
+## Testes
+`npm test` (Node LTS). Suítes que precisam dos arquivos do jogo são puladas quando a pasta não existe.
+
+## Contribuindo / Licença
+Veja [CONTRIBUTING.md](CONTRIBUTING.md). Código sob licença [MIT](LICENSE); Marvel Ultimate Alliance e seus dados pertencem aos respectivos donos e não são distribuídos.
