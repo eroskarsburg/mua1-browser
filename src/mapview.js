@@ -56,12 +56,16 @@ export async function entityItems(world, getModel, onBatch, { concurrency = 12 }
 /** Simulação ao vivo: roda os scripts do mapa em tempo real contra o mundo. */
 export function startSim(world, scripts, stem, opts = {}) {
   const text = new Map(); const cache = new Map();
-  const load = p => { if (!cache.has(p)) { const t = text.get(p + '.py'); cache.set(p, t ? parse(t) : null); } return cache.get(p); };
-  const ready = (async () => { for (const e of scripts.entries) if (e.name.startsWith(stem + '/') || opts.all) text.set(e.name, await scripts.text(e)); })();
-  const { host, runner } = createSim(world, { loadScript: load, rng: Math.random });
+  const load = p => { const k = String(p).toLowerCase(); if (!cache.has(k)) { const t = text.get(k + '.py'); cache.set(k, t ? parse(t) : null); } return cache.get(k); };
+  const dir = stem.split('/').slice(0, -1).join('/') + '/';                 // a fase usa scripts de zonas irmãs (act1/heli/heli1b/...)
+  const wanted = scripts.entries.filter(e => e.name.startsWith(dir) || opts.all);
+  const ready = Promise.all(Array.from({ length: 12 }, async () => { for (let e = wanted.pop(); e; e = wanted.pop()) text.set(e.name.toLowerCase(), await scripts.text(e)); }));   // 12 leituras por vez
+  const { host, runner } = createSim(world, { loadScript: load, rng: Math.random, prevZone: opts.prevZone });
   return {
     host, runner, ready,
-    async run(filter = () => true) { await ready; let n = 0; for (const k of text.keys()) if (filter(k)) { runner.start(load(k.slice(0, -3)), { owner: null }); n++; } return n; },
+    /** roda o script de entrada da zona (world.zonescript) */
+    startZone() { const z = world.defs.get('world')?.zonescript, prog = z ? load(z) : null; if (prog) runner.start(prog, { owner: null }); return !!prog; },
+    async run(filter = k => opts.all || k.startsWith(stem.toLowerCase() + '/')) { await ready; let n = 0; for (const k of text.keys()) if (filter(k)) { runner.start(load(k.slice(0, -3)), { owner: null }); n++; } return n; },
     tick(dt) {
       runner.advance(dt);
       for (const k of runner.blocked) if (runner.t - (k.since ??= runner.t) > 15) { k.since = undefined; runner.signal(k.sig); }   // rede de segurança: sinais sem resposta disparam após 15 s

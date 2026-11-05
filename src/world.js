@@ -1,6 +1,7 @@
 // Modelo de mundo a partir do .xmlb de um mapa (entity = definição, entinst/inst = instância) e o Host que liga
 // as nativas dos scripts BehavEd a esse estado.
 import { Host, Runner, parse, compare } from './behaved.js';
+import { Acts } from './acts.js';
 
 const vec = (s, n = 3, d = 0) => { const a = (s || '').trim().split(/\s+/).map(Number); return Array.from({ length: n }, (_, i) => Number.isFinite(a[i]) ? a[i] : d); };
 const truthy = v => v === 1 || v === true || String(v).toUpperCase() === 'TRUE' || (typeof v === 'string' && Number(v) === 1);
@@ -23,7 +24,7 @@ export class World {
     const e = {
       id: this.insts.length, type, name: a.name || type, def, _ver: 0,
       pos: vec(a.pos), orient: vec(a.orient), ext: vec(a.extents, 6),
-      enabled: true, invisible: false, alive: true, noCollide: def.nocollide === 'true', noTarget: false, invulnerable: false,
+      enabled: true, actEnabled: def.startenabled !== 'false', invisible: false, alive: true, loopOn: def.loopfxstarton === 'true', noCollide: def.nocollide === 'true', noTarget: false, invulnerable: false,
       noGravity: def.nogravity === 'true', aiActive: true, health: Number(def.health) || 100, healthMax: Number(def.health) || 100,
     };
     this.insts.push(e);
@@ -32,13 +33,20 @@ export class World {
   }
   find(name) { return this.byName.get(name) || []; }
   get playerStarts() { return this.insts.filter(e => e.def.classname === 'playerstartent'); }
+  /** ponto de início: o que declara `prevzone` igual à zona de onde se veio, senão o marcado `default` */
+  startFor(prevZone = '') {
+    const l = this.playerStarts, base = s => String(s || '').toLowerCase().split('/').pop(), z = base(prevZone);   // prevzone pode vir com caminho completo
+    return (z && l.find(e => base(e.def.prevzone) === z)) || l.find(e => e.def.default === 'true') || l[0] || null;
+  }
 }
 
 /** Host com semântica de entidades. `loadScript(path)` devolve o programa (ou null) para actscript/spawnscript... */
 export class WorldHost extends Host {
-  constructor(world, { loadScript = () => null, rng } = {}) {
+  constructor(world, { loadScript = () => null, rng, prevZone = '' } = {}) {
     super(rng); this.world = world; this.loadScript = loadScript; this.runner = null; this.objectives = new Map();
-    this.heroes = [1, 2, 3, 4].map(n => this.world.find(`_HERO${n}_`)[0] || Object.assign(world.add('hero', { name: `_HERO${n}_`, pos: (world.playerStarts[n - 1]?.pos || [0, 0, 0]).join(' ') }), { hero: true }));
+    const st = world.startFor(prevZone), sp = st ? st.pos : [0, 0, 0];     // allinone: a equipe inteira no mesmo ponto, em formação
+    this.heroes = [1, 2, 3, 4].map(n => this.world.find(`_HERO${n}_`)[0] || Object.assign(world.add('hero', { name: `_HERO${n}_`, pos: [sp[0] + ((n - 1) % 2) * 50, sp[1] + ((n - 1) >> 1) * 50, sp[2]].join(' '), orient: st ? st.orient.join(' ') : '' }), { hero: true }));
+    this.acts = new Acts(this, rng); this.onTip = null; this.onLoopFx = null; this.onZoneLink = null;
     this.inventory = new Map(); this.onPopup = null; this.onMoneyChange = null;
     this.onSound = null; this.onPlayAnim = null; this.onTeleport = null; this.onAttack = null; this.onEffect = null; this.onLight = null; this.aiAll = true; this.noTarget = { hero: false, enemy: false };
     this.onLoadZone = null; this.director = null; this.obj = null; this.onConversation = null; this.convAllowed = true;   // ligados pelo viewer
@@ -65,20 +73,21 @@ export class WorldHost extends Host {
   }
   /** Spawners com instantspawn nascem ao carregar o mapa. */
   initialSpawns() { return this.world.insts.filter(e => e.def.classname === 'monsterspawnerent' && e.def.instantspawn === 'true').map(e => this.spawnCharacter(e)).filter(Boolean); }
-  runScript(path, owner, activator) {
+  /** repeat: ativação legítima e repetível (toque, uso, reagendamento), fora do limite contra scripts que se re-disparam */
+  runScript(path, owner, activator, repeat = false) {
     if (!path) return false;
     const m = /^([A-Za-z_]\w*)\((.*)\)$/.exec(path);                       // chamada inline: actionFigureReward('x',1,2)
     const prog = m ? parse(path) : this.loadScript(path);
     if (!prog || !this.runner) return false;
     const key = path + '|' + (owner && owner.id), n = (this.runs.get(key) || 0) + 1; this.runs.set(key, n);   // guarda contra scripts que se re-disparam
-    if (n > this.maxRuns || this.runner.tasks.length >= this.maxTasks) { this.stats.blocked++; return false; }
+    if ((n > this.maxRuns && !repeat) || this.runner.tasks.length >= this.maxTasks) { this.stats.blocked++; return false; }
     this.runner.start(prog, { owner, activator }); return true;
   }
   call(name, args, ctx) {
     const set = (prop, val) => { for (const e of this.target(args[0], ctx)) e[prop] = val; };
     switch (name) {
-      case 'setEnable': set('enabled', truthy(args[1])); break;
-      case 'getEnable': return this.target(args[0], ctx).every(e => e.enabled) ? 1 : 0;
+      case 'setEnable': for (const e of this.target(args[0], ctx)) e.enabled = e.actEnabled = truthy(args[1]); break;
+      case 'getEnable': return this.target(args[0], ctx).every(e => e.enabled && e.actEnabled !== false) ? 1 : 0;
       case 'setInvisible': set('invisible', truthy(args[1])); break;
       case 'setNoCollide': set('noCollide', truthy(args[1])); break;
       case 'setNoTarget': set('noTarget', truthy(args[1])); break;
@@ -106,7 +115,8 @@ export class WorldHost extends Host {
         const e = this.world.add(String(args[1]), { name: String(args[2] ?? args[1]), pos: pos.join(' '), orient: orient.join(' ') });
         this.runScript(e.def.spawnscript, e); return e.name;
       }
-      case 'act': case 'actSilent': for (const e of this.target(args[0], ctx)) { e.opened = true; if (e.def.classname === 'monsterspawnerent') this.spawnCharacter(e); this.runScript(e.def.actscript, e, ctx.activator || this.heroes[0]); } break;
+      case 'act': case 'actSilent': for (const e of this.target(args[0], ctx)) this.acts.act(e, ctx.activator || this.heroes[0], { silent: name === 'actSilent', byScript: true }); break;
+      case 'deact': for (const e of this.target(args[0], ctx)) this.acts.deact(e, ctx.activator); break;
       case 'setObjective': this.objectives.set(String(args[0]), args[1]); break;
       case 'getObjective': return this.obj ? (this.obj.done.has(String(args[0])) ? 1 : 0) : (this.objectives.get(String(args[0])) ?? 0);
       case 'objective': if (this.obj) this.obj.command(String(args[0]), args[1]); else this.objectives.set(String(args[0]), args[1]); break;

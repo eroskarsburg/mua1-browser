@@ -8,11 +8,11 @@ export class Objectives {
     const o = new Objectives();
     for (const e of data.entries) {
       if (!/^missions\/.+\.engb$/.test(e.name)) continue;
-      for (const c of parseXmlb(await data.read(e)).children) if (c.tag === 'OBJECTIVE' && c.attrs.name) o.db.set(c.attrs.name, c.attrs);
+      for (const c of parseXmlb(await data.read(e)).children) if (c.tag === 'OBJECTIVE' && c.attrs.name) o.db.set(c.attrs.name.toLowerCase(), c.attrs);
     }
     return o;
   }
-  info(name) { const a = this.db.get(name) || {}; return { name, title: a.descname || name, text: a.description || '', optional: a.optional === 'true', parent: a.parentname || '' }; }
+  info(name) { const a = this.db.get(String(name).toLowerCase()) || {}; return { name, title: a.descname || name, text: a.description || '', optional: a.optional === 'true', parent: a.parentname || '' }; }
   /** EOBJCMD_SHOW / COMPLETE / INCOMPLETE / INCREMENT / HIDE */
   command(name, cmd) {
     const c = String(cmd).replace(/^EOBJCMD_/i, '').toUpperCase();

@@ -2,6 +2,7 @@
 <html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MUA Web</title>
 <style>
+#useprompt{position:absolute;left:50%;bottom:92px;transform:translateX(-50%);z-index:3;display:none;font:italic 800 16px 'Segoe UI',Arial,sans-serif;color:#fff;text-shadow:0 0 6px #000,0 0 10px #3a7bd5}
 #money{position:absolute;right:16px;top:12px;z-index:3;display:none;font:italic 800 22px 'Segoe UI',Arial,sans-serif;color:#ffe27a;text-shadow:0 0 6px #000,0 0 10px #c80}
 :root{--bg:#0f1115;--fg:#e6e8ee;--mut:#8b91a1;--ac:#e23636;--pn:#181b22;--bd:#2a2f3a}
 *{box-sizing:border-box}html,body{height:100%}
@@ -38,7 +39,7 @@ pre{margin:0;padding:12px;white-space:pre-wrap;word-break:break-all;font:12px ui
 <div id="arcs"></div></aside>
 <section><input type="search" id="q" placeholder="filtrar…" style="margin:8px;width:calc(100% - 16px)"><div id="list"></div></section>
 <main><div id="info">Selecione a pasta do Marvel Ultimate Alliance. Nada é enviado: os .bin são lidos localmente, só os trechos necessários.</div>
-<div id="stage"><canvas id="gl"></canvas><div id="hud"></div><div id="bars"></div><select id="anim" title="animação"></select><div id="team"></div><div id="money" title="Tech Bits"></div><div id="ctl"><label><input type="checkbox" id="mk"> marcadores</label><button id="run">▶ scripts do mapa</button><label title="volume">🔊 <input type="range" id="vol" min="0" max="100" value="70" style="width:70px;vertical-align:middle"></label><span id="simt"></span></div></div>
+<div id="stage"><canvas id="gl"></canvas><div id="hud"></div><div id="bars"></div><select id="anim" title="animação"></select><div id="team"></div><div id="money" title="Tech Bits"></div><div id="useprompt">[E] usar</div><div id="ctl"><label><input type="checkbox" id="mk"> marcadores</label><button id="run">▶ scripts do mapa</button><label title="volume">🔊 <input type="range" id="vol" min="0" max="100" value="70" style="width:70px;vertical-align:middle"></label><span id="simt"></span></div></div>
 <canvas id="img"></canvas><pre id="view"></pre></main>
 <script type="module">
 import { Archive } from '../src/archive.js';
@@ -46,7 +47,7 @@ import { RemoteBlob } from '../src/remote.js';
 import { parseXmlb, toXml } from '../src/xmlb.js';
 import { IGB } from '../src/igb.js';
 import { buildScene, readImage, mul, entMatrix } from '../src/scene.js';
-import { Loot, grantXp, TECH } from '../src/items.js';
+import { Loot, grantXp, ORB, MONEY_MODEL } from '../src/items.js';
 import * as Save from '../src/save.js';
 import { decodeDXT } from '../src/dxt.js';
 import { Renderer } from '../src/renderer.js';
@@ -56,7 +57,7 @@ import { Actors, loadCharacterDB } from '../src/actors.js';
 import { Ground, Player, cameraDistance } from '../src/player.js';
 import { Combat, Fighter } from '../src/combat.js';
 import { loadFightData } from '../src/fightstyle.js';
-import { loadTalents } from '../src/talents.js';
+import { loadTalents, parseTalents, resolveNumber } from '../src/talents.js';
 import { Effects } from '../src/effects.js';
 import { Portraits, TeamHud } from '../src/hud.js';
 import { Director } from '../src/director.js';
@@ -69,7 +70,7 @@ import { loadConversation } from '../src/conversation.js';
 import { parse as parseScript, Runner, Host } from '../src/behaved.js';
 import { readSkeleton, readAnimations, Pose } from '../src/anim.js';
 const $ = s => document.querySelector(s);
-const GAME = { team: ['Wolverine', 'Spiderman', 'CaptainAmerica', 'Storm'], link: '', map: '', save: null };   // equipe e ponto de entrada (loadZone)
+const GAME = { team: ['Wolverine', 'Spiderman', 'CaptainAmerica', 'Storm'], link: '', map: '', save: null, fromZone: '' };   // equipe e ponto de entrada (loadZone)
 let GAMEFS = null;                                           // acesso à pasta do jogo (para sounds/)
 const archives = new Map(); let cur = null, renderer = null, seq = 0;
 const fmt = n => n > 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n > 1e3 ? (n / 1e3).toFixed(1) + ' KB' : n + ' B';
@@ -89,8 +90,8 @@ let menu = null;
 $('#play').onclick = async () => {
   if (!menu) {
     const db = await loadCharacterDB(archives.get('data')), hud = archives.get('hud');
-    menu = createMenu({ maps: archives.get('maps'), db, portraits: hud ? new Portraits(hud) : null, onStart: ({ map, team }) => { GAME.team = team; GAME.link = ''; GAME.save = null; goMap(map); },
-      save: Save.read(), onContinue: sv => { GAME.team = sv.team; GAME.link = ''; GAME.save = sv; goMap(sv.map); } });
+    menu = createMenu({ maps: archives.get('maps'), db, portraits: hud ? new Portraits(hud) : null, onStart: ({ map, team }) => { GAME.team = team; GAME.link = ''; GAME.fromZone = ''; GAME.save = null; goMap(map); },
+      save: Save.read(), onContinue: sv => { GAME.team = sv.team; GAME.link = ''; GAME.fromZone = ''; GAME.save = sv; goMap(sv.map); } });
   }
   menu.open();
 };
@@ -99,8 +100,8 @@ const FIRST_MAP = 'act1/heli/heli1';                                            
 let title = null;
 async function showTitle() {
   if (!title) title = new Title(archives, {
-    onStart: () => { GAME.team = START_TEAM; GAME.link = ''; GAME.save = null; goMap(FIRST_MAP); },
-    onLoad: () => { const sv = Save.read(); if (sv) { GAME.team = sv.team; GAME.link = ''; GAME.save = sv; goMap(sv.map); } },
+    onStart: () => { GAME.team = START_TEAM; GAME.link = ''; GAME.fromZone = ''; GAME.save = null; goMap(FIRST_MAP); },
+    onLoad: () => { const sv = Save.read(); if (sv) { GAME.team = sv.team; GAME.link = ''; GAME.fromZone = ''; GAME.save = sv; goMap(sv.map); } },
     onReview: () => $('#play').click(),
     hasSave: () => !!Save.read(),
     audio: () => ({ get volume() { return $('#vol').value / 100; }, setVolume: v => { $('#vol').value = Math.round(v * 100); $('#vol').oninput && $('#vol').oninput(); } }),
@@ -109,8 +110,8 @@ async function showTitle() {
 }
 window.__mua = window.__mua || {}; window.__mua.title = showTitle;
 function goMap(name) {                                       // abre o mapa `name` ("act1/atlantis/atlantis1") com a equipe atual
-  const ar = archives.get('maps'), e = ar && ar.byName.get(name + '.igb'); if (!e) return;
-  cur = ar; show(e, document.createElement('div'));
+  const ar = archives.get('maps'), e = ar && (ar.byName.get(name + '.igb') || ar.entries.find(x => x.name.toLowerCase() === name.toLowerCase() + '.igb')); if (!e) return false;
+  cur = ar; show(e, document.createElement('div')); return true;
 }
 function render() {
   const q = $('#q').value.toLowerCase(), el = $('#list'); el.innerHTML = '';
@@ -138,7 +139,7 @@ async function loadEntities(e, my) {
   if (my !== seq) return;
   const tok = ++simTok, base = $('#hud'), hud0 = () => base.textContent.split(' · entidades')[0], t0 = performance.now();
   const scripts = archives.get('scripts'), actorsAr = archives.get('actors'), data = archives.get('data');
-  sim = startSim(world, scripts || { entries: [] }, stem);
+  sim = startSim(world, scripts || { entries: [] }, stem, { prevZone: GAME.fromZone });
   if (GAME.save) Save.restore(GAME.save, { host: sim.host });
   if (GAME.link) {                                           // chegada por loadZone: equipe na entidade de ligação
     const l = world.find(GAME.link)[0];
@@ -149,12 +150,17 @@ async function loadEntities(e, my) {
   if (actorsAr && data) {                                   // personagens: heróis nos pontos de início + spawners instantâneos
     actors = new Actors(actorsAr, await loadCharacterDB(data));
     const fight = await loadFightData(data, parseXmlb).catch(err => { console.warn('combate', err.message); return null; });
+    const sharedTv = data.has('shared_talents.xmlb') ? parseTalents(parseXmlb(await data.read('shared_talents.xmlb'))) : null;   // monst_health, mdmg_low, mdmg_high
     const add = (ch, ent) => actors.spawn(ch, ent).then(async items => {
       if (tok !== simTok || !items.length) return; renderer.addItems(items);
       const inst = actors.list.find(a => a.ent === ent), hero = /^_HERO\d_$/.test(ent.name);
       if (inst && fight && combat) { const i = inst.p.info, key = `${i.fightstyle}|${i.powerstyle}`.toLowerCase(); if (!combat.styles.has(key)) combat.useStyle(key, await fight.style(i.fightstyle, i.powerstyle)); }
       const tv = hero && inst && data ? await loadTalents(data, parseXmlb, inst.p.info.name).catch(() => null) : null;
-      if (inst && combat) { const nf = combat.add(new Fighter(ent, inst, hero ? 'hero' : 'enemy', hero ? { hp: 240, speed: 260, dmg: 16 } : { hp: Number(ent.def.health) || 100, speed: 190, dmg: 9 })); if (hero) { Save.applyHero(GAME.save, nf); nf.tv = tv; nf.powerReq = combat.powerLevels(nf); } }
+      const st = inst && inst.p.info.attrs || {}, lv = inst && inst.p.info.talentLv || {};     // npcstat: specific_health, ou monst_health no nível do talento; dano mdmg_*
+      const eHp = Number(st.specific_health) || (sharedTv && resolveNumber(sharedTv, '%m_health', lv.monst_health || 1, 0)) || Number(ent.def.health) || 100, eDmg = sharedTv ? resolveNumber(sharedTv, '%mdmg_low', lv.monst_dmg_low || 1, 3) : 9;
+      if (!hero && Number(st.scale_factor) > 0 && Number(st.scale_factor) !== 1) { ent.scale = Number(st.scale_factor); ent._ver++; }
+      if (inst && combat) { const nf = combat.add(new Fighter(ent, inst, hero ? 'hero' : 'enemy', hero ? { hp: 240, speed: 260, dmg: 16 } : { hp: eHp, speed: 190, dmg: eDmg }));
+        if (!hero) { nf.tv = sharedTv; nf.rank = lv.monst_dmg_low || 1; nf.npcLevel = Number(st.level) || 1; nf.spawnOrbs = st.spawnorbs === undefined ? null : Number(st.spawnorbs); } if (hero) { Save.applyHero(GAME.save, nf); nf.tv = tv; nf.powerReq = combat.powerLevels(nf); } }
     }).catch(err => console.warn('ator', ch, err.message));
     combat = new Combat({ actors, ground, host: sim.host });
     const effAr = archives.get('effects'), texAr = archives.get('textures');
@@ -187,23 +193,36 @@ async function loadEntities(e, my) {
     const moneyEl = $('#money'), refreshMoney = () => { moneyEl.textContent = `◆ ${sim.host.inventory.get('MONEY') ?? 0}`; moneyEl.style.display = 'block'; };
     sim.host.onMoneyChange = refreshMoney; refreshMoney();
     loot = new Loot({
-      combat, fx: (n, p) => sim.fx && sim.fx.spawn(n, p),
+      combat, ground, fx: (n, p) => sim.fx && sim.fx.spawn(n, p),
       onMoney: v => { sim.host.inventory.set('MONEY', (sim.host.inventory.get('MONEY') ?? 0) + v); refreshMoney(); },
       visual: o => {
         if (o.type === 'money') {                           // Tech Bits: modelo original pickups/tech_0N
-          const p = getModel(TECH[o.tier].model);
+          const p = getModel(MONEY_MODEL);
           if (p) return p.then(sc => { if (tok === simTok) renderer.addItems(sc.draws.map(d => ({ geo: d.geo, base: d.m, m: mul(entMatrix(o.ent), d.m), st: d.st, ent: o.ent, ver: -1 }))); });
         }
-        const c = o.type === 'health' ? [.25, 1, .35, .85] : o.type === 'energy' ? [.3, .6, 1, .85] : [1, .85, .2, .9], b = cube(o.type === 'money' ? 7 : 11);
+        const c = ORB[o.type] ? ORB[o.type].color : [1, .85, .2, .9], b = cube(o.type === 'money' ? 7 : 11);
         renderer.addItems([{ geo: CUBE, base: b, m: mul(entMatrix(o.ent), b), st: { tex: null, diffuse: c, blend: true, atest: false }, ent: o.ent, ver: -1 }]);
       },
     });
     combat.onKill = (v, a) => {
       if (v.team !== 'enemy') return;
-      loot.drop(v.ent.pos); loot.dropMoney(v.ent.pos, 1 + Math.floor(Math.random() * 4) + Math.round(v.maxhp / 80));
+      const rp = v.ent.def.monster_randompickups ?? v.ent.def.randompickups ?? 3;   // padrão do motor para personagens: 3
+      loot.dropFor(v.ent.pos, Math.max(0, Math.min(5, Number(rp) || 0)), { level: v.npcLevel || 1, character: true, orbs: v.spawnOrbs ?? null });
       const xp = 12 + Math.round(v.maxhp / 10);
       for (const h of combat.fighters) if (h.team === 'hero' && h.alive && grantXp(h, xp)) { director.toast(`${h.inst.p.info.name} subiu para o nível ${h.level}!`); if (window.__audio) window.__audio.play('common/game/levelup', { volume: 0.8 }); doSave(); }
     };
+    combat.onBreak = (p, f) => {                             // objeto destruído: efeito, som, destroços (deathspawn) e itens (randompickups)
+      const e = p.ent, d = e.def, at = [e.pos[0], e.pos[1], e.pos[2] + 20];
+      if (d.deatheffect && sim.fx) sim.fx.spawn(d.deatheffect, at);
+      if (d.deathsound && window.__audio) window.__audio.play(d.deathsound, { volume: 0.7 });
+      if (d.deathspawn && world.defs.has(d.deathspawn)) {
+        const r = world.add(d.deathspawn, { name: d.deathspawn, pos: e.pos.join(' '), orient: e.orient.join(' ') }), mp = r.def.model && getModel(r.def.model);
+        if (mp) mp.then(sc => { if (sc && tok === simTok) renderer.addItems(sc.draws.map(g => ({ geo: g.geo, base: g.m, m: mul(entMatrix(r), g.m), st: g.st, ent: r, ver: r._ver }))); });
+      }
+      loot.dropFor(e.pos, Math.max(0, Math.min(5, Number(d.randompickups) || 0)), { level: (f && f.level) || 1 });
+      sim.host.acts.death(e, f && f.ent);                    // deathscript / deathtargets: objetos que avançam a missão
+    };
+    for (const e of world.insts) if (e.def.classname === 'physent' && e.def.health && e.def.model) combat.addProp(e);
     sim.host.onSpawn = (ent, ch) => add(ch, ent);
     GAME.team.forEach((n, i) => add(n, sim.host.heroes[i]));
     sim.host.initialSpawns();
@@ -217,6 +236,8 @@ async function loadEntities(e, my) {
   $('#info').textContent += ` · ${world.insts.length} instâncias (${r.models} modelos, ${r.markers} marcadores) em ${(performance.now() - t0).toFixed(0)} ms`;
   let running = false, last = performance.now(), n = 0, player = null, follow = true;
   // câmera isométrica alta do jogo original (pitch ~57°, o herói ocupa ~10% da altura da tela): ver Object.assign(renderer.cam, ...) abaixo
+  // ---- efeitos contínuos do mapa (loopfx): fogo, fumaça, faíscas perto da câmera ----
+  let loopT = 0; const loopers = world.insts.filter(e => e.def.loopfx);
   const switchTo = nx => {
     if (!player || !nx || !nx.alive || nx === player.fighter) return;
     player.fighter.controlled = false; nx.controlled = true; Object.assign(player, { ent: nx.ent, inst: nx.inst, fighter: nx, state: 'idle', grounded: true });
@@ -238,14 +259,23 @@ async function loadEntities(e, my) {
   window.__audio = audio;
   showZoneTitle(zoneName(stem));
   const dlgAr = archives.get('dialogs');
+  // tokens de botão dos textos do jogo -> teclas do port
+  const KEYS = { $PRESS_CAP: 'Aperte', $PRESS: 'aperte', $ATTACK: '[J]', $SMASH: '[K]', $POWER: '[1-4]', $BLOCK: '[Q]', $GUARD: '[Q]', $MOVE: '[Espaço]', $ALLY: '[E]', $DPAD_UP: '[Tab]', $PANIC: '[Tab]', $MENU_ACCEPT: '[Enter]' };
+  const keyText = t => String(t).replace(/\\n/g, ' ').replace(/\$[A-Z_]+/g, m => KEYS[m] || m);
   sim.host.onPopup = async path => {                          // createPopupDialogXml: legenda curta (voz via sound())
-    const e = dlgAr && dlgAr.byName.get(path + '.engb'); if (!e) return;
-    try { const r = parseXmlb(await dlgAr.read(e)); const d = r.children && r.children[0]; if (d && d.attrs.text) director.toast(d.attrs.text, 5); } catch { /* sem texto */ }
+    const e = dlgAr && dlgAr.byName.get(path.replace(/^dialogs\//i, '').toLowerCase() + '.engb'); if (!e) return;
+    try { const r = parseXmlb(await dlgAr.read(e)); const d = r.children && r.children[0]; if (d && d.attrs.text) director.toast(keyText(d.attrs.text), 6); } catch { /* sem texto */ }
+  };
+  const tips = new Map();                                     // scripttriggerent com tipid: data/tips.engb
+  if (data && data.has('tips.engb')) data.read('tips.engb').then(b => { for (const t of parseXmlb(b).children) if (!t.attrs.platform && !tips.has(t.attrs.id)) tips.set(t.attrs.id, t.attrs); }).catch(() => {});
+  sim.host.onTip = id => { const t = tips.get(String(id)); if (t) director.toast(`${t.title}: ${keyText(t.text)}`, 7); };
+  sim.host.onZoneLink = e => {                                // zonelinkent: próxima zona na mesma pasta; a chegada usa o playerstart com prevzone
+    const nz = String(e.def.nextzone).toLowerCase(); sim.host.onLoadZone(nz.includes('/') ? nz : stem.split('/').slice(0, -1).join('/') + '/' + nz, '');   // nextzone pode ter caminho completo
   };
   // ---- história: câmera/cutscene, objetivos, conversas ----
   const director = new Director(() => renderer.cam), ui = new StoryUI($('#stage')), EMPTY = new Set(); sim.host.director = director;
   let conv = null, convT = 0; const convAr = archives.get('conversations');
-  if (data) Objectives.load(data).then(o => { sim.host.obj = o; o.onChange = () => ui.objectives(o.list()); if (GAME.save) { Save.restore(GAME.save, { objectives: o }); ui.objectives(o.list()); } }).catch(() => {});
+  const objReady = !data ? Promise.resolve() : Objectives.load(data).then(o => { sim.host.obj = o; o.onChange = () => ui.objectives(o.list()); if (GAME.save) { Save.restore(GAME.save, { objectives: o }); ui.objectives(o.list()); } }).catch(() => {});
   const speak = () => { if (conv && conv.cur && conv.cur.voice && audio) audio.play(conv.cur.voice, { volume: 1 }); };
   const advance = i => { if (!conv) return; conv.advance(i); convT = 0; if (conv.done) { conv = null; ui.dialog(null); } else { ui.dialog(conv, advance); speak(); } };
   sim.host.onConversation = async path => {
@@ -271,8 +301,8 @@ async function loadEntities(e, my) {
   }
   if (sim.fx) sim.host.onEffect = (name, pos) => sim.fx.spawn(name, pos);
   sim.host.onLight = c => { const z = !c[0] && !c[1] && !c[2]; renderer.tint = z ? [1, 1, 1] : c.map(v => Math.min(1.3, 0.35 + 0.9 * (v || 0))); };
-  sim.host.onLoadZone = (map, link) => { director.cameraFade(1, 0.6); doSave(); setTimeout(() => { if (tok === simTok) { GAME.link = link; GAME.save = Save.read(); goMap(map); } }, 700); };
-  window.__mua.game = { sim, director, ui, get conv() { return conv; }, get player() { return player; }, get loot() { return loot; }, get combat() { return combat; }, save: () => doSave() };
+  sim.host.onLoadZone = (map, link) => { director.cameraFade(1, 0.6); doSave(); setTimeout(() => { if (tok !== simTok) return; GAME.link = link; GAME.fromZone = stem.split('/').pop(); GAME.save = Save.read(); if (!goMap(map)) { director.cameraFade(0, 0.6); console.warn('zona não encontrada', map); } }, 700); };
+  window.__mua.game = { sim, director, ui, get conv() { return conv; }, get player() { return player; }, get loot() { return loot; }, get combat() { return combat; }, ground, world, save: () => doSave() };
   const keys = new Set(), CTRL = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight']);
   const kd = ev => {
     if (tok !== simTok || /INPUT|SELECT/.test(ev.target.tagName)) return;
@@ -282,6 +312,7 @@ async function loadEntities(e, my) {
       return;
     }
     if (director.locked && /^(KeyJ|KeyK|Digit\d)$/.test(ev.code)) return;
+    if (ev.code === 'KeyE' && !ev.repeat && player && !director.locked) { sim.host.acts.use(player.ent); ev.preventDefault(); return; }
     if (ev.code === 'KeyQ' && !ev.repeat && player && player.fighter && !player.air && !director.locked) { combat.setBlock(player.fighter, true); ev.preventDefault(); return; }
     if (ev.code === 'KeyL' && !ev.repeat && player && player.fighter && !player.air && !director.locked) { combat.dodge(player.fighter, player.heading(keys, renderer.cam.yaw)); ev.preventDefault(); return; }
     if (ev.code === 'Space' && !ev.repeat && player && !director.locked) { if (player.jump()) ev.preventDefault(); return; }
@@ -296,7 +327,7 @@ async function loadEntities(e, my) {
   };
   const ku = ev => { keys.delete(ev.code); if (player && player.fighter) { if (ev.code === 'KeyK') combat.release(player.fighter, 'KeyK'); if (ev.code === 'KeyQ') combat.setBlock(player.fighter, false); } };
   window.addEventListener('keydown', kd); window.addEventListener('keyup', ku);
-  $('#ctl').insertAdjacentHTML('beforeend', ' <small>WASD move · Shift anda · J ataque (combo) · K pesado (segure p/ carregar) · Q bloqueia · L esquiva · Espaço pula · 1-4 poderes · Tab/F1-F4/clique troca herói · arrastar = câmera</small>');
+  $('#ctl').insertAdjacentHTML('beforeend', ' <small>WASD move · Shift anda · J ataque (combo) · K pesado (segure p/ carregar) · Q bloqueia · L esquiva · Espaço pula (2x = duplo) · E usa · 1-4 poderes · Tab/F1-F4/clique troca herói · arrastar = câmera</small>');
   $('#run').onclick = async () => { n = await sim.run(); running = true; };
   const bars = $('#bars'), bd = [];
   const updateBars = c => {
@@ -314,16 +345,23 @@ async function loadEntities(e, my) {
     if (sim.fx) sim.fx.update(dt);
     const ctl = director.update(dt), locked = director.locked || !!conv;           // ctl: o diretor comanda a câmera
     ui.frame(director); $('#team').style.display = $('#bars').style.display = director.hudHidden ? 'none' : '';
-    if (conv) { convT += dt; if (!conv.choices.length && convT > conv.readTime) advance(0); }
+    if (conv) { convT += dt; if (conv.choices.length <= 1 && convT > conv.readTime) advance(0); }
     if (actors) {
       actors.settle(ground); actors.update(dt);
       if (!player) {
         const inst = actors.list.find(a => a.ent === sim.host.heroes[0]), fi = combat && combat.fighters.find(f => f.ent === sim.host.heroes[0]);
-        if (inst && fi) { player = new Player(inst.ent, inst, actors, ground); player.fighter = fi; fi.controlled = true; Object.assign(renderer.cam, { dist: 700, want: 700, pitch: 1.0, fov: 0.8 }); }
+        if (inst && fi) { player = new Player(inst.ent, inst, actors, ground); player.fighter = fi; player.killz = Number(world.defs.get('world')?.killz ?? -Infinity); fi.controlled = true; Object.assign(renderer.cam, { dist: 700, want: 700, pitch: 1.0, fov: 0.8, yaw: -Math.PI / 2 }); }
       }
       if (loot) loot.update(dt);
+      if (running && player && !conv) sim.host.acts.update(dt, player.ent);
+      loopT -= dt;
+      if (loopT <= 0 && sim.fx && player) {
+        loopT = 0.9; const p = player.ent.pos;
+        loopers.filter(e => e.loopOn && e.alive && Math.hypot(e.pos[0] - p[0], e.pos[1] - p[1]) < 1000).slice(0, 24).forEach(e => sim.fx.spawn(e.def.loopfx, e.pos));
+      }
+      if (player) { const u = !locked && sim.host.acts.usableBy(player.ent), el = $('#useprompt'); el.style.display = u ? 'block' : 'none'; }
       saveT += dt; if (saveT > 10) { saveT = 0; doSave(); }                    // autosave a cada 10 s
-      if (combat) { combat.update(dt); updateBars(combat); teamHud.update(combat.fighters.filter(f => f.team === 'hero'), player && player.fighter); }
+      if (combat) { if (!conv) combat.update(dt); updateBars(combat); teamHud.update(combat.fighters.filter(f => f.team === 'hero'), player && player.fighter); }
       for (let i = fx.length - 1; i >= 0; i--) {              // anima os anéis de poder
         const x = fx[i]; x.ent.fxT += dt; const k = Math.min(1, x.ent.fxT / 0.45), R = x.ent.fxR * k;
         x.base[0] = R * 2; x.base[5] = R * 2; x.base[10] = 6; x.ent._ver++;
@@ -342,6 +380,7 @@ async function loadEntities(e, my) {
     const pf = player && player.fighter; $('#simt').textContent = `${pf ? `${pf.ent.name.replace(/_/g, '')} HP ${pf.hp}/${pf.maxhp} · EN ${Math.round(pf.energy)} · abates ${combat.kills} · ` : ''}${actors ? actors.list.length + ' atores · ' : ''}${running ? `t=${sim.runner.t.toFixed(1)}s · ${active}/${n} scripts · ${sim.host.log.length} chamadas` : ''}`;
     renderer.draw(); requestAnimationFrame(loop);
   };
+  Promise.all([sim.ready, objReady]).then(() => { if (tok === simTok) { sim.startZone(); running = true; } });   // o script de entrada da zona roda ao carregar, já com os objetivos
   requestAnimationFrame(loop);
 }
 

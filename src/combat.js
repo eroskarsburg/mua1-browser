@@ -21,9 +21,22 @@ export class Combat {
   constructor({ actors, ground, host, fight = null }) {
     this.actors = actors; this.ground = ground; this.host = host; this.fight = fight; this.styles = new Map(); this.fighters = []; this.log = []; this.kills = 0;
     this.onFx = null; this.onHit = null; this.onKill = null; this.onSwing = null; this.onSound = null; this.onTrail = null; this.onEffect = null; this.onProjectile = null;
-    this.projectiles = [];
+    this.projectiles = []; this.props = []; this.onBreak = null;
   }
   add(f) { this.fighters.push(f); return f; }
+  /** objeto quebrável do mapa (physent com `health`) */
+  addProp(ent) { this.props.push({ ent, hp: Number(ent.def.health) || 1, r: 26 }); }
+  /** golpe atinge objetos dentro do alcance/arco; ao zerar a vida, onBreak(prop, atacante) */
+  hitProps(f, x, y, reach, arc, radial, dmg, seen = null) {
+    for (const p of this.props) {
+      const e = p.ent; if (!e.alive || !e.enabled || e.invulnerable || (seen && seen.has(p))) continue;
+      const dx = e.pos[0] - x, dy = e.pos[1] - y, d = Math.hypot(dx, dy);
+      if (d > reach + p.r || Math.abs(e.pos[2] - f.ent.pos[2]) > 120) continue;
+      if (!radial && d > 14 && Math.abs(wrap(Math.atan2(dy, dx) - f.ent.orient[2])) > arc) continue;
+      if (seen) seen.add(p);                                                // projétil: um acerto por passada
+      p.hp -= dmg; if (p.hp <= 0) { e.alive = false; e.enabled = false; if (this.onBreak) this.onBreak(p, f); }
+    }
+  }
   /** registra os nós de um estilo de luta (Map) para uso pelos lutadores com aquele `fightstyle` */
   useStyle(name, nodes) { this.styles.set(String(name).toLowerCase(), nodes); }
   /** nós do lutador: estilo + powerstyle do herói (chave `estilo|powerstyle`), ou só o estilo */
@@ -79,8 +92,8 @@ export class Combat {
   }
   strikeTrig(f, t) {
     const a = t.attrs, mods = t.mods, yaw = f.ent.orient[2], arc = (Number(a.arc) || 60) * DEG, reach = (Number(a.maxrange) || 48) + 36;
-    const rank = f.level || 1, ref = resolveValue(f.tv, a.damage, rank), raw = ref ? avgRange(ref.value) : 0;
-    const base = a.damagescale === 'none' ? raw : (f.dmg || BASE_DMG) * raw / UNIT, knock = a.knockback === undefined ? 40 : resolveNumber(f.tv, a.knockback, rank, 40);
+    const rank = f.rank || f.level || 1, ref = resolveValue(f.tv, a.damage, rank), raw = ref ? avgRange(ref.value) : 0;
+    const base = a.damagescale === 'none' || a.damagescale === 'difficulty' ? raw : (f.dmg || BASE_DMG) * raw / UNIT, knock = a.knockback === undefined ? 40 : resolveNumber(f.tv, a.knockback, rank, 40);
     const kind = mods.includes('dmgmod_popup') ? 'popup' : mods.includes('dmgmod_trip') ? 'trip' : mods.includes('dmgmod_stun') ? 'stun' : (mods.includes('dmgmod_auto_knockback') || knock >= 120) ? 'knockdown' : 'pain';
     const ground = mods.includes('dmgmod_ground'), radial = arc >= Math.PI * 0.95;
     let hits = 0;
@@ -91,6 +104,7 @@ export class Combat {
       if (!radial && d > 14 && Math.abs(wrap(Math.atan2(dy, dx) - yaw)) > arc) continue;
       this.damage(o, f, Math.max(1, Math.round(base * (0.9 + Math.random() * 0.2))), knock, kind); hits++;
     }
+    if (f.team === 'hero') this.hitProps(f, f.ent.pos[0], f.ent.pos[1], reach, arc, radial, base);
     return hits;
   }
 
@@ -154,7 +168,7 @@ export class Combat {
   }
   /** projétil do poder (ex.: escudo do Capitão América): voa até `maxrange`, atravessa se `pierce`, e volta ao dono se o handler for ch_returning_projectile */
   spawnProjectile(f, t) {
-    const a = t.attrs, rank = f.level || 1, yaw = f.ent.orient[2], ref = resolveValue(f.tv, a.damage, rank);
+    const a = t.attrs, rank = f.rank || f.level || 1, yaw = f.ent.orient[2], ref = resolveValue(f.tv, a.damage, rank);
     const p = { owner: f, dmg: ref ? avgRange(ref.value) : f.dmg, knock: resolveNumber(f.tv, a.knockback, rank, 120), speed: Number(a.speed) || 450, range: Number(a.maxrange) || 800,
       pierce: a.pierce === 'true', returning: !!(f.node && /returning_projectile/.test(f.node.handler)), dir: [Math.cos(yaw), Math.sin(yaw)], dist: 0, back: false, hit: new Set(), t: 0,
       ent: { pos: [f.ent.pos[0] + Math.cos(yaw) * 30, f.ent.pos[1] + Math.sin(yaw) * 30, f.ent.pos[2] + 48], orient: [0, 0, 0], _ver: 0, alive: true, enabled: true, invisible: false, name: 'proj', scale: 1 } };
@@ -169,6 +183,7 @@ export class Combat {
         if (d < 45 || p.t > 12) p.dead = true; else { e.pos[0] += dx / d * k; e.pos[1] += dy / d * k; }
       }
       e._ver++;
+      if (o.team === 'hero') this.hitProps(o, e.pos[0], e.pos[1], 30, Math.PI, true, p.dmg, p.hit);
       for (const v of this.foes(o)) {
         if (p.hit.has(v) || Math.hypot(v.ent.pos[0] - e.pos[0], v.ent.pos[1] - e.pos[1]) > 42 || Math.abs(v.ent.pos[2] + 35 - e.pos[2]) > 90) continue;
         p.hit.add(v); this.damage(v, o, Math.max(1, Math.round(p.dmg)), p.knock, 'knockdown'); if (!p.pierce) { if (p.returning && !p.back) { p.back = true; p.hit.clear(); } else p.dead = true; break; }

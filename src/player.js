@@ -23,13 +23,13 @@ export class Ground {
           const zlo = Math.min(w[a + 2], w[b + 2], w[c + 2]), zhi = Math.max(w[a + 2], w[b + 2], w[c + 2]);
           const wx0 = Math.min(w[a], w[b], w[c]), wx1 = Math.max(w[a], w[b], w[c]), wy0 = Math.min(w[a + 1], w[b + 1], w[c + 1]), wy1 = Math.max(w[a + 1], w[b + 1], w[c + 1]);
           if (zhi - zlo < 6 || (wx1 - wx0) / C > 20 || (wy1 - wy0) / C > 20) continue;
-          const wid = this.walls.length; this.walls.push([w[a], w[a + 1], w[b], w[b + 1], w[c], w[c + 1], zlo, zhi]);
+          const wid = this.walls.length; this.walls.push([w[a], w[a + 1], w[b], w[b + 1], w[c], w[c + 1], zlo, zhi, d.ent || null]);
           for (let gx = Math.floor(wx0 / C); gx <= Math.floor(wx1 / C); gx++) for (let gy = Math.floor(wy0 / C); gy <= Math.floor(wy1 / C); gy++) {
             const k = gx * 73856093 ^ gy * 19349663; (this.wgrid.get(k) || this.wgrid.set(k, []).get(k)).push(wid);
           }
           continue;
         }
-        const tri = [w[a], w[a + 1], w[a + 2], w[b], w[b + 1], w[b + 2], w[c], w[c + 1], w[c + 2]], id = this.tris.length; this.tris.push(tri);
+        const tri = [w[a], w[a + 1], w[a + 2], w[b], w[b + 1], w[b + 2], w[c], w[c + 1], w[c + 2], d.ent || null], id = this.tris.length; this.tris.push(tri);
         const x0 = Math.min(tri[0], tri[3], tri[6]), x1 = Math.max(tri[0], tri[3], tri[6]), y0 = Math.min(tri[1], tri[4], tri[7]), y1 = Math.max(tri[1], tri[4], tri[7]);
         if ((x1 - x0) / C > 40 || (y1 - y0) / C > 40) continue;
         for (let gx = Math.floor(x0 / C); gx <= Math.floor(x1 / C); gx++) for (let gy = Math.floor(y0 / C); gy <= Math.floor(y1 / C); gy++) {
@@ -45,7 +45,7 @@ export class Ground {
     for (let gx = Math.floor((x - r) / C); gx <= Math.floor((x + r) / C) && !hit; gx++) for (let gy = Math.floor((y - r) / C); gy <= Math.floor((y + r) / C) && !hit; gy++) {
       const l = this.wgrid.get(gx * 73856093 ^ gy * 19349663); if (!l) continue;
       for (const id of l) {
-        const t = this.walls[id]; if (t[7] < z + lo || t[6] > z + hi) continue;
+        const t = this.walls[id]; if (t[7] < z + lo || t[6] > z + hi || (t[8] && (t[8].noCollide || !t[8].alive))) continue;
         if (segDist(x, y, t[0], t[1], t[2], t[3]) < r || segDist(x, y, t[2], t[3], t[4], t[5]) < r || segDist(x, y, t[4], t[5], t[0], t[1]) < r) { hit = true; break; }
       }
     }
@@ -66,7 +66,7 @@ export class Ground {
     const C = this.cell, l = this.grid.get(Math.floor(x / C) * 73856093 ^ Math.floor(y / C) * 19349663); if (!l) return null;
     let best = null;
     for (const id of l) {
-      const t = this.tris[id];
+      const t = this.tris[id]; if (t[9] && (t[9].noCollide || !t[9].alive)) continue;
       const d = (t[4] - t[7]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[1] - t[7]); if (!d) continue;
       const a = ((t[4] - t[7]) * (x - t[6]) + (t[6] - t[3]) * (y - t[7])) / d, b = ((t[7] - t[1]) * (x - t[6]) + (t[0] - t[6]) * (y - t[7])) / d, c = 1 - a - b;
       if (a < -1e-4 || b < -1e-4 || c < -1e-4) continue;
@@ -83,36 +83,49 @@ const segDist = (px, py, ax, ay, bx, by) => {
 };
 const STEP0 = 36, FALL0 = 240;
 const RUN = 300, WALK = 130, STEP = 36, FALL = 240;
-// Pulo (Marvel.exe, handler ch_move_jump @ 0x140558100): velocidade vertical inicial 450 u/s; horizontal x1.4 sem poder ativo.
-// A gravidade não foi localizada no exe: ajustada para que o tempo no ar (2*v0/g = 0.9 s) caiba no clipe jump_start (1.1 s).
-export const JUMP_V = 450, JUMP_G = 1000, JUMP_AIR_SPEED = 1.4;
+// Pulo (Marvel.exe): gravidade do mundo -1300 u/s^2 (FUN_140426fd0; gravitymod 1), velocidade vertical 450 u/s (ch_move_jump, FUN_140558100).
+// Pulo duplo (já no ar): vertical 450*0.6 somada à subida atual, horizontal x1.4, clipe jumpdouble_start.
+export const JUMP_V = 450, JUMP_G = 1300, DOUBLE_V = 0.6, DOUBLE_H = 1.4;
 
 /** Herói controlado: WASD/setas relativos à câmera; Shift = andar. */
 export class Player {
-  constructor(ent, inst, actors, ground) { this.ent = ent; this.inst = inst; this.actors = actors; this.ground = ground; this.state = 'idle'; this.grounded = false; }
+  constructor(ent, inst, actors, ground) { this.killz = -Infinity; this.safe = null; this.ent = ent; this.inst = inst; this.actors = actors; this.ground = ground; this.state = 'idle'; this.grounded = false; }
   /** Direção desejada (yaw do mundo) a partir das teclas e da câmera; null sem entrada. */
   heading(keys, camYaw) {
     const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0), r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
     if (!f && !r) return null; const fx = -Math.cos(camYaw), fy = -Math.sin(camYaw);
     return Math.atan2(fy * f - fx * r, fx * f + fy * r);
   }
-  /** Espaço: salta se estiver no chão e livre. */
+  /** Espaço: salta do chão; no ar, pulo duplo (uma vez). */
   jump() {
-    if (!this.grounded || this.air || this.landT > 0 || (this.fighter && this.fighter.state !== 'free')) return false;
-    this.air = { vz: JUMP_V, t: 0, hv: [0, 0] }; this.state = 'jump';
-    const a = this.inst.p.anims.find(x => x.name === 'jump_start'), T = 2 * JUMP_V / JUMP_G;
-    this.actors.play(this.inst, 'jump_start', { loop: false, rate: a ? a.dur / T : 1 }); return true;
+    if (this.air) {
+      if (this.air.double) return false;
+      this.air.double = true; this.air.vz = JUMP_V * DOUBLE_V + Math.max(0, this.air.vz); this.air.hs = DOUBLE_H;
+      this.actors.play(this.inst, 'jumpdouble_start', { loop: false }); return true;
+    }
+    if (!this.grounded || this.landT > 0 || (this.fighter && this.fighter.state !== 'free')) return false;
+    this.safe = [...this.ent.pos]; this.air = { vz: JUMP_V, t: 0, hs: 1, double: false }; this.state = 'jump';
+    this.actors.play(this.inst, 'jump_start', { loop: false }); return true;
+  }
+  /** no ar só as paredes limitam (o chão não prende o personagem à altura atual) */
+  airMove(e, sx, sy) {
+    const g = this.ground, ok = (x, y) => !g.blocked(x, y, e.pos[2]) && g.height(x, y, e.pos[2] + 60) !== null;   // sem chão abaixo: é a borda do mapa
+    if (ok(e.pos[0] + sx, e.pos[1] + sy)) { e.pos[0] += sx; e.pos[1] += sy; } else if (ok(e.pos[0] + sx, e.pos[1])) e.pos[0] += sx; else if (ok(e.pos[0], e.pos[1] + sy)) e.pos[1] += sy;
   }
   stepAir(dt, keys, camYaw) {
     const e = this.ent, a = this.air; a.t += dt; a.vz -= JUMP_G * dt;
-    let f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0), r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-    if (f || r) {
-      const fx = -Math.cos(camYaw), fy = -Math.sin(camYaw), rx = fy, ry = -fx; let dx = fx * f + rx * r, dy = fy * f + ry * r; const l = Math.hypot(dx, dy); dx /= l; dy /= l;
-      const sp = ((this.actors.groundSpeed ? this.actors.groundSpeed(this.inst, 'run') : 0) || RUN) * JUMP_AIR_SPEED;
-      this.ground.move(e, dx * sp * dt, dy * sp * dt); const yaw = Math.atan2(dy, dx), d = Math.atan2(Math.sin(yaw - e.orient[2]), Math.cos(yaw - e.orient[2])); e.orient[2] += d * Math.min(1, dt * 10);
+    const yaw = this.heading(keys, camYaw);
+    if (yaw !== null) {
+      const sp = ((this.actors.groundSpeed ? this.actors.groundSpeed(this.inst, 'run') : 0) || RUN) * a.hs;
+      this.airMove(e, Math.cos(yaw) * sp * dt, Math.sin(yaw) * sp * dt);
+      const d = Math.atan2(Math.sin(yaw - e.orient[2]), Math.cos(yaw - e.orient[2])); e.orient[2] += d * Math.min(1, dt * 10);
     }
     e.pos[2] += a.vz * dt; e._ver++;
     const h = this.ground.height(e.pos[0], e.pos[1], e.pos[2] + 60);
+    if (e.pos[2] < this.killz || (h === null && a.t > 3)) {                 // abaixo de killz (mundo): volta ao último chão firme
+      if (this.safe) { e.pos = [...this.safe]; e._ver++; if (this.fighter) this.fighter.hp = Math.max(1, Math.round(this.fighter.hp * 0.9)); }
+      this.air = null; this.state = 'idle'; this.actors.play(this.inst, 'idle'); return;
+    }
     if (a.vz < 0 && h !== null && e.pos[2] <= h) {                          // pouso
       e.pos[2] = h; this.air = null; this.landT = 0.25; this.state = 'land';
       this.actors.play(this.inst, 'jump_land', { loop: false });
